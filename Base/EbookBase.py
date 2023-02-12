@@ -8,8 +8,11 @@
 import time
 import re
 import requests
+
 from bs4 import BeautifulSoup as bs
+
 from lxml import etree
+
 from ebooklib import epub
 from ebooklib.plugins.base import BasePlugin
 
@@ -89,7 +92,7 @@ default_socks = 'socks5://127.0.0.1:1081'
 
 
 # 从 url 地址获取网页文本内容
-def req_get_info(url, headers=None, proxies="", retry=5, timeout=15):
+def req_get_info(url, headers=None, proxies="", retry=3, timeout=15, is_in_chapter=False):
     '''
     发送requests请求模块，最多尝试3次
     '''
@@ -108,17 +111,25 @@ def req_get_info(url, headers=None, proxies="", retry=5, timeout=15):
         try:
             resp = requests.get(url, proxies=proxies, headers=headers, timeout=timeout)
             resp.encoding = 'utf-8'
-            print(resp.status_code, url)
+            if is_in_chapter:
+                print("is in chapter", resp.status_code, url)
+
+            else:
+                print(resp.status_code, url)
+
             return resp
         except Exception as e:
             print('retry:', _, 'url:', url, 'proxies=', proxies, 'requests error:', str(e))
             time.sleep(0.5)
+            
     return None
 
 
 class ImagePlugin(BasePlugin):
     '''处理图片插件，自动下载图片素材到本地目录'''
+    
     NAME = 'Image Plugin'
+
     url_doer = {}  # 重复URL地址记录器,同时记录文件名
     img_idx = 0    # 命名图片编号
     url = None     # 网址路径
@@ -129,6 +140,7 @@ class ImagePlugin(BasePlugin):
 
     def fetch_image(self, doc, book, lable_xpath=r"//img", attr='src'):
         '''图片链接下载处理'''
+
         for _link in doc.xpath(lable_xpath):
             img_url = _link.get(attr)
             if not img_url.startswith('http'):
@@ -137,13 +149,16 @@ class ImagePlugin(BasePlugin):
                     continue
                 else:
                     img_url = self.url + "/" + img_url
+
             print(f"xpath:{lable_xpath},attr:{attr}, img_url={img_url}")
             img_url = re.sub(r'\?.*', '', img_url)     # 过滤?及其后参数请求信息#
+
             if self.url_doer.get(img_url) is None:
                 resp = req_get_info(img_url, proxies=self.proxy)
                 if resp is None:
                     print(f"Warning: image {img_url} lost!")
                     continue
+                
                 img_item = epub.EpubImage()
                 file_name = '{:03d}_{}'.format(
                     self.img_idx, img_url.rsplit('/', maxsplit=1)[1]
@@ -153,11 +168,13 @@ class ImagePlugin(BasePlugin):
                 img_item.set_content(resp.content)
                 book.add_item(img_item)
                 _link.set(attr, file_name)
+
                 self.url_doer[img_url] = file_name
             else:
                 print("already downloaded url:", img_url)
                 file_name = self.url_doer[img_url]
                 _link.set('src', file_name)
+
         return doc
 
     def html_before_write(self, book, chapter):
@@ -192,20 +209,25 @@ class Ebook(object):
 
     def set_cover(self, url):
         """设置封面"""
+
         self.cover_url = url
+
         return None
 
     def set_intro(self, content):
         """设置简介"""
+
         self.intro = content
         return None
 
     def set_proxy(self, proxy):
         """设置简介"""
+
         self.proxy = proxy
 
     def set_plugin(self, plugin):
         """设置插件"""
+
         self.plugin = plugin
         if self.opts.get('plugins') is None:
             self.opts['plugins'] = []
@@ -250,12 +272,19 @@ class Ebook(object):
     def fetch_book(self):
         '''
         制作电子书主流程
+
         1. 获取所有章链接
         2. 按章获取所有小节链接
         '''
+
         book = self.create_book()
+        
         self.set_plugin(ImagePlugin(self.proxy, self.url))
         total_toc = self.fetch_all_chapter()
+        # exit()
+
+        if total_toc is None:
+            exit()
 
         for sec in total_toc:
             book.add_item(sec)
@@ -265,26 +294,30 @@ class Ebook(object):
         # add navigation files
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
+
         # add css file
         nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css",
                                 media_type="text/css", content=style)
         book.add_item(nav_css)
 
         book.spine = ['nav'] + total_toc
-        book_path = f'{self.outdir}/{self.book_name}_{self.author}.epub'
+        book_path = f'{self.outdir}/《{self.book_name}》_{self.author}.epub'
         print(f'输出文件名: {book_path}')
+
         # opts = {'plugins': ImagePlugin(), }
         epub.write_epub(book_path, book, self.opts)
 
     def fetch_all_chapter(self, conf=None):
         '''
         章节内容提取器：提取所有小节内容对象实例
+        
         params:
             conf: dict类型，包含url和level信息
             level: 提取层次，默认第0层为不区分章
             url: 访问页面地址
+
         return:
-            list: chapter章节对象实例列表
+            list: chapter章节对象实例 列表
         '''
 
         if conf is None:
@@ -292,34 +325,52 @@ class Ebook(object):
             conf['url'] = self.url
             conf['name'] = self.book_name
             conf['level'] = 0
+
         url = conf['url']
         level = conf['level']
+
         # 主页面
         total_toc = []
         resp = req_get_info(url, proxies=self.proxy)
         if resp is None:
+            print(f"ERROR: {url} 访问失败")
             return None
 
-        ch_list = self.fetch_chapter_list(resp.text)
-        if len(ch_list) > 0:
-            for ch_url in ch_list:
-                resp1 = req_get_info(ch_url, proxies=self.proxy)
-                sec_list = self.fetch_section_list(resp1.text)
+        # 获取 主页面出现的多本书的列表
+        # https://luoxiadushu.com/haibolian/
+        # 海伯利安、海伯利安的陨落 等
+        chapter_title_url_tup_list = self.fetch_chapter_list(resp.text)
+        print(f"DEBUG: chapter_title_url_tup_list: {chapter_title_url_tup_list}")
+        # exit()
+
+        if len(chapter_title_url_tup_list) > 0:
+            chapter_idx = 0  # 章节序号列表
+            for chapter_info in chapter_title_url_tup_list:
+                chapter_title, chapter_url = chapter_info
+                print(f"DEBUG: {chapter_title}, {chapter_url}")
+                content = chapter_title
+                chapter = self.add_chapter(chapter_title, 'p{:02d}_{:03d}.xhtml'.format(level, chapter_idx), content)
+                chapter_idx = chapter_idx + 1
+                total_toc.append(chapter)
+
+                resp1 = req_get_info(chapter_url, proxies=self.proxy, is_in_chapter=True)
+                section_title_url_tup_list = self.fetch_section_list(resp1.text)
                 idx = 0  # 章节序号列表
                 level += 1
-                for sec_info in sec_list[:]:
+                test_num = 3
+                for sec_info in section_title_url_tup_list[:test_num]:
                     stitle, surl = sec_info
                     print(f"DEBUG: {stitle}, {surl}")
-                    resp2 = req_get_info(surl, proxies=self.proxy)
+                    resp2 = req_get_info(surl, proxies=self.proxy, is_in_chapter=True)
                     content = self.fetch_content(resp2.text)
                     chapter = self.add_chapter(stitle, 'p{:02d}_{:03d}.xhtml'.format(level, idx), content)
                     idx = idx + 1
                     total_toc.append(chapter)
         else:
-            sec_list = self.fetch_section_list(resp.text)
+            section_title_url_tup_list = self.fetch_section_list(resp.text)
             idx = 0  # 章节序号列表
             level += 1
-            for sec_info in sec_list[:]:
+            for sec_info in section_title_url_tup_list[:]:
                 stitle, surl = sec_info
                 print(f"DEBUG: {stitle}, {surl}")
                 resp2 = req_get_info(surl, proxies=self.proxy)
@@ -327,33 +378,58 @@ class Ebook(object):
                 chapter = self.add_chapter(stitle, 'p{:02d}_{:03d}.xhtml'.format(level, idx), content)
                 idx = idx + 1
                 total_toc.append(chapter)
+
         return total_toc
 
     def fetch_chapter_list(self, content):
         '''
-        抓取章(title,url)列表
+        抓取 主页面出现的多本书(title, url)列表
+
         params:
-            url:  访问页面URL
+            content:  主页面 HTML内容
         return
-            list  [url, ...]
+            list  [(title, url), ...]
         '''
         soup = bs(content, "lxml")
+
         # 提取章列表
-        a_list = soup.select(r'div#content-list>div > h3 > a')
-        return [a.get('href') for a in a_list]
+        a_list = soup.select(r'div#content-list > div > h3 > a')
+
+        return [(a.get('title'), a.get('href')) for a in a_list]
 
     def fetch_section_list(self, content):
         '''
-        抓取章/节(title,url)列表
+        抓取章/节(title, url)列表
+
         params:
-            url:  访问页面URL
+            content:  主页面 HTML内容
         return
-            list  [(has_chapter, intro, (title, url)), ...] , has_chapter:  是否分章节,True-是，默认False
+            list  [(title, url), ...]
         '''
         soup = bs(content, "lxml")
+
         a_list = soup.select(r'div#content-list > div.book-list a')
-        section_list = [(a.get('title'), a.get('href')) for a in a_list]
-        return section_list
+        section_title_url_tup_list = [(a.get('title'), a.get('href')) for a in a_list]
+
+        return section_title_url_tup_list
+
+    def filter_content(self, content):
+        """
+        内容过滤
+        params:
+            content: 内容
+        return:
+            content: 过滤后内容
+        """
+        import re
+
+        p_str = r'<p>.*luo?</p>'
+
+        # 把“<p>”标签中含有luo 的内容删除
+
+        content = re.sub(p_str, content)
+
+        return content
 
     def fetch_content(self, content):
         """
@@ -366,27 +442,51 @@ class Ebook(object):
         try:
             soup = bs(content, 'lxml')
             content = soup.find('div', id='nr1').prettify()
+            print(f"filter: content: {content}")
+
+            content = self.filter_content(content)
+
             return content
+
         except Exception as e:
             print(str(e))
+
         return None
 
 
 if __name__ == '__main__':
-    start_urls = [
+    # start_url_dic_lst = [
+    #     {
+    #         'url': 'https://www.luoxia.com/xiaowangzi',
+    #         'book_name': '小王子',
+    #         'author': '[法]安托万·德·圣·埃克苏佩里',
+    #         'id': 'xiaowangzi',
+    #         'lang': 'zh'
+    #     },
+    #     # {
+    #     #     'url': 'https://www.luoxia.com/haibolian',
+    #     #     'book_name': '海伯利安',
+    #     #     'author': '[美]丹·西蒙斯',
+    #     # },
+    # ]
+
+    # start_url_dic_lst = [
+    #     {
+    #         'url': 'https://www.kunnu.com/zhedie/',
+    #         'book_name': '北京折叠',
+    #         'author': '[中]郝景芳',
+    #         'lang': 'zh'
+    #     }
+    # ]
+
+    start_url_dic_lst = [
         {
-            'url': 'https://www.luoxia.com/xiaowangzi',
-            'book_name': '小王子',
-            'author': '[法]安托万·德·圣·埃克苏佩里',
-            'id': 'xiaowangzi',
-            'lang': 'zh'
-        },
-        {
-            'url': 'https://www.luoxia.com/haibolian',
+            'url': 'https://www.luoxia.com/haibolian/',
             'book_name': '海伯利安',
             'author': '[美]丹·西蒙斯',
         },
     ]
-    for params in start_urls[:]:
-        ebook = Ebook(params, outdir="./")
+
+    for params in start_url_dic_lst[:]:
+        ebook = Ebook(params, outdir="F:/WorkSpace/电子书/auto_gen")
         ebook.fetch_book()

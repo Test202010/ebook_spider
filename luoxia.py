@@ -8,11 +8,13 @@
 
 import re
 from bs4 import BeautifulSoup as bs
+
 from Base.EbookBase import Ebook
 
 
 class LuoxiaEbook(Ebook):
     # 电子书制作
+    
     def fetch_content(self, text):
         """
         内容提取
@@ -33,7 +35,7 @@ class LuoxiaEbook(Ebook):
 
 
 if __name__ == '__main__':
-    start_urls = [
+    start_url_lst = [
         {
             'url': 'https://www.luoxia.com/xiaowangzi',
             'book_name': '小王子',
@@ -47,6 +49,7 @@ if __name__ == '__main__':
             'author': '[美]丹·西蒙斯',
         },
     ]
-    for params in start_urls[:]:
-        ebook = LuoxiaEbook(params, outdir="./")
+
+    for param_dic in start_url_lst[:]:
+        ebook = LuoxiaEbook(param_dic, outdir="./")
         ebook.fetch_book()
